@@ -1,0 +1,264 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Diez Momentos</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Figtree:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* Concepto: cuadrícula de diez fotos; el texto de cada una sube sobre la imagen al pasar el mouse o al hacer clic. Dos espacios quedan reservados. */
+  :root {
+    --bg: #f2f4f1;
+    --fg: #16211d;
+    --muted: #55645e;
+    --accent: #c2410c;
+    --card: #e3e8e4;
+    --line: #9aa8a1;
+    --veil: rgba(10, 22, 18, 0.88);
+    --veil-fg: #f1f5f2;
+    --focus: #0e7490;
+    --font-display: "Bricolage Grotesque", "Trebuchet MS", system-ui, sans-serif;
+    --font-body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1715;
+      --fg: #e8eeea;
+      --muted: #9fb0a8;
+      --accent: #fb923c;
+      --card: #172320;
+      --line: #4a5d55;
+      --veil: rgba(4, 10, 8, 0.9);
+      --veil-fg: #f1f5f2;
+      --focus: #67e8f9;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1715;
+    --fg: #e8eeea;
+    --muted: #9fb0a8;
+    --accent: #fb923c;
+    --card: #172320;
+    --line: #4a5d55;
+    --veil: rgba(4, 10, 8, 0.9);
+    --veil-fg: #f1f5f2;
+    --focus: #67e8f9;
+    color-scheme: dark;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-body);
+    font-size: 16px;
+    line-height: 1.55;
+    padding-block: 40px 56px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .wrap { max-width: 1120px; margin-inline: auto; }
+
+  header { display: grid; gap: 12px; margin-bottom: 32px; max-width: 62ch; }
+  h1 {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: clamp(2.2rem, 6vw, 3.6rem);
+    line-height: 1.02;
+    letter-spacing: -0.02em;
+    margin: 0;
+    text-wrap: balance;
+  }
+  header p { margin: 0; color: var(--muted); font-size: 1.05rem; }
+  .hint {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--accent); font-weight: 500;
+  }
+  .hint::before { content: ""; width: 28px; height: 2px; background: var(--accent); }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+    gap: 20px;
+  }
+
+  .card {
+    all: unset;
+    box-sizing: border-box;
+    position: relative;
+    display: block;
+    aspect-ratio: 4 / 3;
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--card);
+    cursor: pointer;
+    isolation: isolate;
+    min-width: 0;
+  }
+  .card:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+
+  .card img.pic {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+    transition: transform 0.7s cubic-bezier(.2,.7,.2,1);
+  }
+
+  .tag {
+    position: absolute; left: 0; bottom: 0; right: 0;
+    padding: 28px 16px 12px;
+    background: linear-gradient(to top, rgba(6,14,11,.78), rgba(6,14,11,0));
+    color: #fff;
+    display: flex; justify-content: space-between; align-items: end; gap: 12px;
+    transition: opacity 0.25s ease;
+    z-index: 1;
+  }
+  .tag b { font-family: var(--font-display); font-weight: 700; font-size: 1.15rem; letter-spacing: -0.01em; }
+  .tag span { font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; opacity: .85; white-space: nowrap; }
+
+  .veil {
+    position: absolute; inset: 0;
+    z-index: 2;
+    background: var(--veil);
+    color: var(--veil-fg);
+    padding: 18px 18px 16px;
+    display: flex; flex-direction: column; gap: 8px;
+    overflow-y: auto;
+    transform: translateY(100%);
+    transition: transform 0.4s cubic-bezier(.2,.7,.2,1);
+  }
+  .veil h2 {
+    font-family: var(--font-display); font-weight: 700;
+    font-size: 1.1rem; margin: 0; letter-spacing: -0.01em;
+  }
+  .veil p { margin: 0; font-size: 0.95rem; line-height: 1.5; }
+  .veil .pin {
+    margin-top: auto; padding-top: 6px;
+    font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; opacity: .7;
+  }
+
+  .card.open .veil { transform: translateY(0); }
+  .card.open .tag { opacity: 0; }
+  .card.open img.pic { transform: scale(1.06); }
+
+  @media (hover: hover) {
+    .card:hover .veil { transform: translateY(0); }
+    .card:hover .tag { opacity: 0; }
+    .card:hover img.pic { transform: scale(1.06); }
+  }
+
+  /* Espacios reservados */
+  .card.empty {
+    background: transparent;
+    border: 2px dashed var(--line);
+  }
+  .card.empty .slot {
+    position: absolute; inset: 0;
+    display: grid; place-content: center; justify-items: center; gap: 6px;
+    color: var(--muted); text-align: center; padding: 16px;
+  }
+  .card.empty .slot b { font-family: var(--font-display); font-size: 1.15rem; color: var(--fg); }
+  .card.empty .slot span { font-size: 0.85rem; }
+  .card.empty .plus {
+    width: 44px; height: 44px; border-radius: 50%;
+    border: 2px solid var(--line);
+    display: grid; place-items: center;
+    font-size: 1.6rem; line-height: 1; color: var(--muted);
+  }
+  .card.empty .veil { background: var(--veil); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .veil, .tag, .card img.pic { transition: none; }
+  }
+
+  footer { margin-top: 36px; color: var(--muted); font-size: 0.85rem; }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="hint">Photo Gallery</span>
+    <h1>Ten moments</h1>
+    <p>Hover your mouse over a photo to read its text. Click to keep it visible, and click again to hide it. On a mobile phone, tap the photo.</p>
+  </header>
+
+  <main class="grid" id="grid" aria-label="Ten photo gallery"></main>
+
+</div>
+
+<script>
+(function () {
+  var items = [
+    { src: 'fotos/img1.jpg', pos: '50% 38%', t: 'Exploring the Gould Museum in Bogotá', k: 'Museum',
+      alt: 'Exploring the Gould Museum in Bogotá',
+      p: 'When we visited the Gold Museum with my boyfriend to celebrate a special date, I had recently moved to Bogotá. It was a beautiful experience because I learned a lot about the sculptures. Before we went there, I had never explored such historical exhibitions in the city. I was surrounded by people from different countries, and I saw ancient objects and videos where people told old stories. It was a lovely day, and I had already started getting to know my new city better.' },
+
+    { src: 'fotos/img2.jpg', pos: '50% 50%', t: 'the concert with my friends', k: 'Concert',
+      alt: 'the concert with my friends',
+      p: 'That day I had gone to Rock al Parque with my friends. We had tried to arrive when the lead singer/guitarist of Los Prisioneros was performing; luckily, we had made it in time. We had seen Esteman and Mon Laferte as well. I remembered this moment not only because of the concert, but also because of how crowded it had been—despite being a huge crowd of strangers, we had all shared the laughter, screams, and emotions.' },
+
+    { src: 'fotos/img3.jpg', pos: '50% 50%', t: 'The Thinker', k: 'Laughter',
+      alt: 'The Thinker',
+      p: 'That day we had gone camping in Guatavita. I remembered it because it had helped me cope with a loss. It had been funny, since an earthquake had hit us that day and had felt strong. Later, in the bathrooms, there had been a completely exposed toilet, and we had taken this photo to make a joke.' },
+
+    { src: 'fotos/img4.jpg', pos: '50% 22%', t: 'vacation in Cartagena', k: 'Sea',
+      alt: 'vacation in Cartagena',
+      p: 'For my dad´s 45th birthday and my aunt´s 40th, my family had rented a yacht in Cartagena for about 40 of us. By the time the sun went down, we had spent the entire day together—from noon until around 9 PM. We had eaten delicious food, enjoyed great drinks, danced, and sung our hearts out to all kinds of music. I had jumped into the open sea, ridden jet skis, and played games with everyone. We had shared so many amazing moments, and the views of the city at night were simply breathtaking. It was such an unforgettable experience being surrounded by all my family.' },
+    
+    { src: 'fotos/img5.jpg', pos: '50% 58%', t: 'Airsoft geart', k: 'Adventure',
+      alt: 'Airsoft gear',
+      p: 'Siete personasPlaying airsoft for the first time with my friends was an unforgettable experience, as we had spent weeks planning our strategy and preparing. By the time the referee gave the signal for the first match, we had already rented all our tactical gear and agreed on a plan to protect one another. Before the match ended, I had dodged several BBs, taken down two opponents, and survived an intense firefight. By the end of the day, we had been running around for hours until we were completely exhausted, creating incredible memories from our first game. posan con sus réplicas de airsoft frente a la lona del campo de juego. Casi todos visten chaleco negro, llevan el casco en la mano o en el suelo, y dos de ellas se sientan en el pasto al frente del grupo.' },
+
+    { src: 'fotos/img6.jpg', pos: '50% 50%', t: 'Rock in the rain', k: 'Festival',
+      alt: 'Rock in the rain',
+      p: 'Attending Rock al Parque was an unforgettable experience because I had prepared for it for months, listening to every band on the lineup and gathering my gear before arriving at Parque Simón Bolívar. By the time the headliner took the stage under the pouring Bogota rain, my friends and I had already gotten lost in the massive crowd, but we kept dancing as thousands of fans had transformed the field into an incredible mosh pit. By the end of the night, I had sung until my voice was completely gone and I had experienced the most chaotic, energetic concert of my life.' },
+      
+      
+    { src: 'fotos/img7.jpg', pos: '50% 50%', t: 'The coffee park and my competence ', k: 'Scenery',
+      alt: 'The coffee park and my competence ',
+      p: 'When we arrived in the Coffee Triangle, we had already traveled early, done our makeup, and practiced our routine before the competition started. After we had warmed up and reviewed everything, we entered the platform. A few seconds after the routine had begun, I twisted my ankle and heard a sound, but since it had just started, I kept going until we finished. My ankle swelled up and turned purple. Even though I had hurt my foot, I enjoyed visiting Parque del Café, and at the end of the day, we felt like a family.' },
+    
+    { src: 'fotos/img8.jpg', pos: '50% 50%', t: 'Christmas with the family', k: 'Selfie',
+      alt: 'Christmas with the family',
+      p: '"My mom had returned to Colombia after many years, and she had decided to treat the whole family to a trip to Boyacá. Most of my mom’s family came along, and even my best friend had joined us for the occasion. We had set out on the famous Christmas lights tour, visiting several towns and walking around under the night lights. We had spent so much quality time together, exploring different places and enjoying every single moment. It was such a special trip, especially because someone who is no longer with us today had been there with us, making those memories truly unforgettable."' },
+
+     { src: 'fotos/img10.jpeg', pos: '50% 50%', t: 'lost in the shopping mall', k: 'Experience',
+      alt: 'lost in the shopping mall',
+      p: 'When I was little, I had gotten lost in a busy shopping mall after I had stopped to look at a toy display, but thankfully, my panicked parents found me with a security guard after we had been separated for what felt like hours' },
+
+    { src: 'fotos/img9.jpeg', pos: '50% 50%', t: 'beach day', k: 'Beach',
+      alt: 'beach day',
+      p: 'When I went to the beach as a child, I had refused to go into the sea because I had heard that it was full of scary sea creatures, so I had spent the whole day playing on the sand instead' }
+  ];
+
+  var grid = document.getElementById('grid');
+
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+
+  items.forEach(function (it, i) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('aria-expanded', 'false');
+    if (it.empty) {
+      b.className = 'card empty';
+      b.id = 'card-' + it.n;
+      b.innerHTML =
+        '<div class="slot"><div class="plus" aria-hidden="true">+</div><b>Espacio ' + it.n + '</b><span>Reservado para una próxima foto</span></div>' +
+        '<div class="veil"><h2>Espacio ' + it.n + '</h2><p>Aquí irán la foto número ' + it.n + ' y su párrafo cuando los tengas listos.</p><div class="pin">Clic para fijar u ocultar</div></div>';
+    } else {
+      b.className = 'card';
+      b.id = 'card-' + (i + 1);
+      b.innerHTML =
+        '<img class="pic" src="' + it.src + '" alt="' + esc(it.alt) + '" loading="lazy" style="object-position:' + it.pos + '">' +
+        '<div class="tag"><b>' + esc(it.t) + '</b><span>' + esc(it.k) + '</span></div>' +
+        '<div class="veil"><h2>' + esc(it.t) + '</h2><p>' + esc(it.p) + '</p><div class="pin">Clic para fijar u ocultar</div></div>';
+    }
+    b.addEventListener('click', function () {
+      var open = b.classList.toggle('open');
+      b.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    grid.appendChild(b);
+  });
+})();
+</script>
+
+</body></html>
