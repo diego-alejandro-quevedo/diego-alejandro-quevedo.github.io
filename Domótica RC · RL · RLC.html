@@ -1,0 +1,570 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Domótica RC · RL · RLC</title>
+<style>
+:root{--bg:#0f172a;--panel:#131d33;--panel2:#0b1426;--border:#1e293b;--cyan:#06b6d4;--emerald:#10b981;--amber:#f59e0b;--red:#f43f5e;--fg:#e2e8f0;--muted:#94a3b8;--off:#475569;color-scheme:dark}
+html,body{background:var(--bg);color:var(--fg)}
+body{margin:0;font:14px/1.45 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:12px;overflow-x:hidden}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;accent-color:#06b6d4}
+input[type=checkbox]{accent-color:#06b6d4}
+@keyframes flow{to{stroke-dashoffset:-20}}
+.flow{stroke-dasharray:4 6;animation:flow .6s linear infinite}
+@media (prefers-reduced-motion: reduce){.flow{animation:none}}
+details summary{list-style:none}
+details summary::-webkit-details-marker{display:none}
+</style>
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+
+const SPEEDS = [0.2, 1, 5];
+const DEF = {
+  rc: { V: 12, R: 15, C: 1000, thr: 0.95, bounce: false },   // R en kΩ, C en µF
+  rl: { V: 12, R: 10, L: 200, flyback: true },               // R en Ω, L en mH
+  rlc: { Vs: 1, f: 1000, L: 100, C: 250, R: 50 },            // L mH, C nF, R Ω
+};
+const fmt = (x, d = 2) => (isFinite(x) ? Number(x).toFixed(d) : "—");
+
+// ---------- Simulación (estado mutable fuera de React) ----------
+const freshRC = () => ({ t: 0, v: 0, started: false, bounceArmed: false, tp: 0, zoom: [], scope: [], ripMin: Infinity, ripMax: -Infinity });
+const freshRL = () => ({ t: 0, i: 0, on: false, offFlyback: true, spike: 0, scope: [] });
+
+function advanceRC(s, dt, p) {
+  if (!s.started || dt <= 0) return;
+  const tau = p.R * 1e3 * p.C * 1e-6;
+  const n = Math.min(300, Math.max(1, Math.ceil(dt / 0.001)));
+  const h = dt / n;
+  for (let k = 0; k < n; k++) {
+    s.t += h; s.tp += h;
+    let vin = p.V;
+    // Rebote mecánico: durante 30 ms la entrada conmuta al azar entre 0 y V
+    if (s.bounceArmed && s.tp < 0.03) vin = Math.random() < 0.5 ? p.V : 0;
+    s.v += (vin - s.v) * (1 - Math.exp(-h / tau)); // paso exacto del RC
+    if (s.tp < 0.06) {
+      s.zoom.push({ t: s.tp, vin, v: s.v });
+      if (s.tp < 0.03) { s.ripMin = Math.min(s.ripMin, s.v); s.ripMax = Math.max(s.ripMax, s.v); }
+    }
+  }
+  s.scope.push({ t: s.t, v: s.v });
+  while (s.scope.length > 2 && s.scope[0].t < s.t - 6 * tau) s.scope.shift();
+}
+
+function advanceRL(s, dt, p) {
+  const R = p.R, L = p.L / 1000, Imax = p.V / R;
+  const n = Math.min(300, Math.max(1, Math.ceil(dt / 0.0005)));
+  const h = dt / n;
+  for (let k = 0; k < n; k++) {
+    s.t += h;
+    if (s.on) s.i = Imax + (s.i - Imax) * Math.exp(-R * h / L);       // i(t) = (V/R)(1 − e^(−Rt/L))
+    else if (s.offFlyback) s.i *= Math.exp(-R * h / L);                // recirculación por diodo
+    else s.i *= Math.exp(-h / 0.0005);                                 // apertura abrupta (arco)
+  }
+  s.scope.push({ t: s.t, i: s.i / Imax });
+  const tau = L / R;
+  while (s.scope.length > 2 && s.scope[0].t < s.t - 6 * tau) s.scope.shift();
+}
+
+function rlcCalc(q) {
+  const L = q.L / 1000, C = q.C * 1e-9, R = q.R;
+  const f0 = 1 / (2 * Math.PI * Math.sqrt(L * C));
+  const Q = (1 / R) * Math.sqrt(L / C);
+  const BW = R / (2 * Math.PI * L);
+  const Z = f => {
+    const w = 2 * Math.PI * Math.max(f, 1);
+    const XL = w * L, XC = 1 / (w * C);
+    return Math.sqrt(R * R + (XL - XC) * (XL - XC));
+  };
+  const Imax = q.Vs / R;
+  return { f0, Q, BW, Z, Imax, rel: f => R / Z(f) };
+}
+
+// ---------- Dibujo en canvas ----------
+function strokePath(ctx, pts, color, width, dash) {
+  if (pts.length < 2) return;
+  ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash);
+  ctx.beginPath(); pts.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+  ctx.stroke(); ctx.restore();
+}
+function drawGrid(ctx, w, h, pad) {
+  ctx.save(); ctx.strokeStyle = "#1e293b"; ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) { const y = pad + ((h - 2 * pad) * i) / 4; ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w - pad, y); ctx.stroke(); }
+  for (let i = 0; i <= 8; i++) { const x = pad + ((w - 2 * pad) * i) / 8; ctx.beginPath(); ctx.moveTo(x, pad); ctx.lineTo(x, h - pad); ctx.stroke(); }
+  ctx.restore();
+}
+function hLine(ctx, w, y, color) {
+  ctx.save(); ctx.strokeStyle = color; ctx.setLineDash([5, 4]); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); ctx.restore();
+}
+function label(ctx, text, x, y, align = "left") {
+  ctx.save(); ctx.fillStyle = "#64748b"; ctx.font = "11px ui-monospace, monospace"; ctx.textAlign = align; ctx.fillText(text, x, y); ctx.restore();
+}
+
+function drawRC(ctx, w, h, s, p) {
+  const pad = 12, tau = p.R * 1e3 * p.C * 1e-6, Tw = 5 * tau;
+  const x0 = Math.max(0, s.t - Tw), x1 = Math.max(Tw, s.t);
+  const X = t => pad + ((t - x0) / (x1 - x0)) * (w - 2 * pad);
+  const Y = v => h - pad - (v / (p.V * 1.08)) * (h - 2 * pad);
+  drawGrid(ctx, w, h, pad);
+  hLine(ctx, w, Y(0.632 * p.V), "#f59e0b");
+  hLine(ctx, w, Y(p.thr * p.V), "#f43f5e");
+  label(ctx, `${(p.V).toFixed(0)} V`, w - pad, pad + 10, "right");
+  label(ctx, `${(0.632 * p.V).toFixed(1)} V (1τ)`, pad + 4, Y(0.632 * p.V) - 4);
+  if (s.started) {
+    const teo = [];
+    for (let k = 0; k <= 160; k++) { const t = x0 + ((x1 - x0) * k) / 160; teo.push([X(t), Y(p.V * (1 - Math.exp(-t / tau)))]); }
+    strokePath(ctx, teo, "rgba(148,163,184,0.6)", 1.5, [5, 4]);
+  }
+  strokePath(ctx, s.scope.map(q => [X(q.t), Y(q.v)]), "#10b981", 2.5, []);
+}
+
+function drawZoom(ctx, w, h, s, p) {
+  const pad = 10;
+  if (s.zoom.length < 2) { label(ctx, "Pulsa Iniciar con rebote activo para ver el filtrado (0–60 ms)", 10, h / 2); return; }
+  const X = t => pad + (t / 0.06) * (w - 2 * pad);
+  const Y = v => h - pad - ((v + 0.1 * p.V) / (1.2 * p.V)) * (h - 2 * pad);
+  drawGrid(ctx, w, h, pad);
+  strokePath(ctx, s.zoom.map(q => [X(q.t), Y(q.vin)]), "#06b6d4", 1.2, []);
+  strokePath(ctx, s.zoom.map(q => [X(q.t), Y(q.v)]), "#10b981", 2.5, []);
+  label(ctx, "entrada (cian) · V_C (verde)", w - pad, pad + 10, "right");
+}
+
+function drawRL(ctx, w, h, s, p) {
+  const pad = 12, tau = p.L / 1000 / p.R, Tw = 5 * tau;
+  const x0 = Math.max(0, s.t - Tw), x1 = Math.max(Tw, s.t);
+  const X = t => pad + ((t - x0) / (x1 - x0)) * (w - 2 * pad);
+  const Y = y => h - pad - (y / 1.08) * (h - 2 * pad);
+  drawGrid(ctx, w, h, pad);
+  hLine(ctx, w, Y(1), "#10b981");
+  hLine(ctx, w, Y(0.95), "#f43f5e");
+  label(ctx, `I_max ${(p.V / p.R).toFixed(2)} A`, w - pad, pad + 10, "right");
+  strokePath(ctx, s.scope.map(q => [X(q.t), Y(q.i)]), "#f59e0b", 2.5, []);
+}
+
+function drawRLC(ctx, w, h, c, f) {
+  const pad = 14;
+  const X = ff => pad + (ff / 3000) * (w - 2 * pad);
+  const Y = y => h - pad - (y / 1.08) * (h - 2 * pad);
+  drawGrid(ctx, w, h, pad);
+  ctx.fillStyle = "rgba(16,185,129,0.12)";
+  ctx.fillRect(X(c.f0 - c.BW / 2), pad, X(c.f0 + c.BW / 2) - X(c.f0 - c.BW / 2), h - 2 * pad);
+  const pts = [];
+  for (let ff = 20; ff <= 3000; ff += 10) pts.push([X(ff), Y(c.rel(ff))]);
+  strokePath(ctx, pts, "#06b6d4", 2.5, []);
+  hLine(ctx, w, Y(0.707), "#f43f5e");
+  ctx.save(); ctx.strokeStyle = "#e2e8f0"; ctx.setLineDash([3, 4]); ctx.globalAlpha = 0.5;
+  ctx.beginPath(); ctx.moveTo(X(c.f0), pad); ctx.lineTo(X(c.f0), h - pad); ctx.stroke(); ctx.restore();
+  const rel = c.rel(f), pass = rel >= 0.707;
+  ctx.save(); ctx.fillStyle = pass ? "#10b981" : "#f59e0b";
+  ctx.beginPath(); ctx.arc(X(f), Y(rel), 5, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  label(ctx, "0 Hz", pad, h - 3);
+  label(ctx, "3000 Hz", w - pad, h - 3, "right");
+  label(ctx, `f₀ ${c.f0.toFixed(0)} Hz`, X(c.f0) + 4, pad + 10);
+}
+
+// ---------- Componentes de UI ----------
+function Scope({ height = 170, draw }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const c = ref.current; if (!c) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = c.clientWidth || 300, h = height;
+    if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+    const ctx = c.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    draw(ctx, w, h);
+  });
+  return <canvas ref={ref} style={{ width: "100%", height, display: "block", borderRadius: 6, background: "#0b1426", border: "1px solid var(--border)" }} />;
+}
+
+const Slider = ({ label: lab, value, min, max, step = 1, unit, onChange, decimals = 0 }) => (
+  <label className="block min-w-0">
+    <div className="flex justify-between text-xs" style={{ color: "var(--muted)" }}>
+      <span>{lab}</span><span className="mono" style={{ color: "var(--fg)" }}>{Number(value).toFixed(decimals)} {unit}</span>
+    </div>
+    <input type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(Number(e.target.value))} />
+  </label>
+);
+
+const Btn = ({ color = "var(--cyan)", onClick, disabled, children }) => (
+  <button type="button" onClick={onClick} disabled={disabled}
+    className="rounded-md px-3 py-1.5 text-xs font-medium border disabled:opacity-40"
+    style={{ borderColor: color, color }}>{children}</button>
+);
+
+const Pill = ({ color, children }) => (
+  <span className="mono text-[11px] rounded px-2 py-0.5 whitespace-nowrap" style={{ border: `1px solid ${color}`, color }}>{children}</span>
+);
+
+const Metric = ({ label: lab, value, unit, color }) => (
+  <div className="rounded-md p-2 min-w-0" style={{ background: "var(--panel2)", border: "1px solid var(--border)" }}>
+    <div className="text-[11px]" style={{ color: "var(--muted)" }}>{lab}</div>
+    <div className="mono text-sm break-words" style={{ color: color || "var(--fg)" }}>
+      {value} <span className="text-[11px]" style={{ color: "var(--muted)" }}>{unit}</span>
+    </div>
+  </div>
+);
+
+const Details = ({ children }) => (
+  <details className="text-xs rounded-md p-2" style={{ background: "var(--panel2)", border: "1px solid var(--border)" }}>
+    <summary className="cursor-pointer" style={{ color: "var(--cyan)" }}>Explicación Física y Ecuaciones</summary>
+    <div className="mt-2 space-y-1 mono" style={{ color: "var(--muted)" }}>{children}</div>
+  </details>
+);
+
+const Card = ({ title, sub, pill, children }) => (
+  <section className="rounded-lg p-4 flex flex-col gap-3 min-w-0" style={{ background: "var(--panel)", border: "1px solid var(--border)" }}>
+    <div className="flex items-start justify-between gap-2 flex-wrap">
+      <div className="min-w-0"><h2 className="font-semibold">{title}</h2><p className="text-xs" style={{ color: "var(--muted)" }}>{sub}</p></div>
+      {pill}
+    </div>
+    {children}
+  </section>
+);
+
+function BlockDiagram({ states }) {
+  const items = [
+    { k: "rc", name: "Temporizador RC", sub: "Armado de salida" },
+    { k: "rl", name: "Cerrojo RL", sub: "Bloqueo electromagnético" },
+    { k: "rlc", name: "Receptor RLC", sub: "Alerta sin interferencias" },
+  ];
+  const col = st => (st === "on" ? "var(--emerald)" : st === "proc" ? "var(--amber)" : "var(--off)");
+  const lab = st => (st === "on" ? "Activo" : st === "proc" ? "En proceso" : "Inactivo");
+  return (
+    <div className="flex flex-col md:flex-row items-stretch gap-1 mb-4">
+      {items.map((it, idx) => (
+        <React.Fragment key={it.k}>
+          <div className="flex-1 min-w-0 rounded-md p-3" style={{ background: "var(--panel)", border: `1px solid ${col(states[it.k])}` }}>
+            <div className="flex justify-between items-center gap-2">
+              <span className="font-medium">{it.name}</span>
+              <span className="mono text-[11px]" style={{ color: col(states[it.k]) }}>{lab(states[it.k])}</span>
+            </div>
+            <div className="text-xs" style={{ color: "var(--muted)" }}>{it.sub}</div>
+          </div>
+          {idx < 2 && (
+            <div className="flex items-center justify-center md:w-10 py-1">
+              <svg width="36" height="18" viewBox="0 0 36 18" aria-hidden="true">
+                <path d="M2 9 H26" stroke={col(states[it.k])} strokeWidth="2" className={states[it.k] === "off" ? "" : "flow"} />
+                <path d="M24 3 L34 9 L24 15 Z" fill={col(states[it.k])} />
+              </svg>
+            </div>
+          )}
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}
+
+// ---------- Esquemáticos SVG ----------
+const WIRE = "#334155";
+function Battery({ x = 60 }) {
+  return (<g>
+    <line x1={x - 12} y1="72" x2={x + 12} y2="72" stroke="#e2e8f0" strokeWidth="2.5" />
+    <line x1={x - 5} y1="82" x2={x + 5} y2="82" stroke="#e2e8f0" strokeWidth="2.5" />
+    <text x={x - 30} y="80" fill="#94a3b8" fontSize="12">V</text>
+  </g>);
+}
+
+function RCSchematic({ v, V, started, flowing }) {
+  const frac = Math.min(1, Math.max(0, v / V));
+  const loop = "M60 30 H260 V130 H60 Z";
+  return (
+    <svg viewBox="0 0 320 160" className="w-full h-auto" role="img" aria-label="Circuito RC">
+      <path d={loop} fill="none" stroke={WIRE} strokeWidth="2" />
+      {flowing && <path d={loop} fill="none" stroke="#06b6d4" strokeWidth="2.5" className="flow" />}
+      <Battery />
+      <line x1={started ? 110 : 110} y1="30" x2={started ? 130 : 124} y2={started ? 30 : 16} stroke="#e2e8f0" strokeWidth="2" />
+      <text x="112" y="14" fill="#94a3b8" fontSize="11">S</text>
+      <polyline points="150,30 156,22 162,38 168,22 174,38 180,22 186,38 192,22 198,38 204,30 210,30" fill="none" stroke="#f59e0b" strokeWidth="2" />
+      <text x="170" y="14" fill="#f59e0b" fontSize="11">R</text>
+      <line x1="250" y1="78" x2="270" y2="78" stroke="#10b981" strokeWidth="3" />
+      <line x1="250" y1="90" x2="270" y2="90" stroke="#10b981" strokeWidth="3" />
+      <text x="276" y="88" fill="#10b981" fontSize="11">C</text>
+      <rect x="292" y="30" width="14" height="100" fill="none" stroke={WIRE} />
+      <rect x="292" y={130 - 100 * frac} width="14" height={100 * frac} fill="#10b981" opacity="0.8" />
+      <text x="286" y="150" fill="#94a3b8" fontSize="11">{(frac * 100).toFixed(0)}%</text>
+    </svg>
+  );
+}
+
+function RLSchematic({ lock, flowing, lockFrac }) {
+  const loop = "M60 30 H260 V130 H60 Z";
+  return (
+    <svg viewBox="0 0 320 160" className="w-full h-auto" role="img" aria-label="Circuito RL">
+      <path d={loop} fill="none" stroke={WIRE} strokeWidth="2" />
+      {flowing && <path d={loop} fill="none" stroke="#f59e0b" strokeWidth="2.5" className="flow" />}
+      <Battery />
+      <line x1="110" y1="30" x2={lock ? 130 : 124} y2={lock ? 30 : 16} stroke="#e2e8f0" strokeWidth="2" />
+      <text x="112" y="14" fill="#94a3b8" fontSize="11">S</text>
+      <polyline points="150,30 156,22 162,38 168,22 174,38 180,22 186,38 192,22 198,38 204,30 210,30" fill="none" stroke="#f59e0b" strokeWidth="2" />
+      <text x="170" y="14" fill="#f59e0b" fontSize="11">R</text>
+      <circle cx="276" cy="92" r="26" fill="#f59e0b" opacity={0.15 + 0.6 * lockFrac} />
+      <path d="M260 70 q12 5 0 10 q12 5 0 10 q12 5 0 10 q12 5 0 10" fill="none" stroke="#f59e0b" strokeWidth="2.5" />
+      <text x="282" y="60" fill="#f59e0b" fontSize="11">L</text>
+    </svg>
+  );
+}
+
+function LockSVG({ frac }) {
+  const bolt = 100 - 45 * frac;
+  return (
+    <svg viewBox="0 0 160 110" className="w-full h-auto" role="img" aria-label="Cerrojo electromagnético">
+      <rect x="10" y="20" width="90" height="70" rx="6" fill="#0b1426" stroke="#334155" />
+      <rect x={bolt} y="44" width="45" height="22" rx="3" fill="#cbd5e1" />
+      <circle cx="58" cy="55" r="5" fill="#0b1426" />
+      <text x="10" y="106" fill="#94a3b8" fontSize="10">{frac > 0.95 ? "Retraído" : frac > 0.02 ? "Moviéndose" : "Extendido"}</text>
+    </svg>
+  );
+}
+
+function RLCSchematic({ pass, flowing }) {
+  const loop = "M60 30 H260 V130 H60 Z";
+  return (
+    <svg viewBox="0 0 320 160" className="w-full h-auto" role="img" aria-label="Circuito RLC serie">
+      <path d={loop} fill="none" stroke={WIRE} strokeWidth="2" />
+      {flowing && <path d={loop} fill="none" stroke="#06b6d4" strokeWidth="2.5" className="flow" />}
+      <Battery />
+      <path d="M110 30 q10 -14 20 0 q10 -14 20 0 q10 -14 20 0 q10 -14 20 0" fill="none" stroke={pass ? "#10b981" : "#f59e0b"} strokeWidth="2.5" />
+      <text x="150" y="12" fill="#f59e0b" fontSize="11">L</text>
+      <line x1="250" y1="78" x2="270" y2="78" stroke="#10b981" strokeWidth="3" />
+      <line x1="250" y1="90" x2="270" y2="90" stroke="#10b981" strokeWidth="3" />
+      <text x="276" y="88" fill="#10b981" fontSize="11">C</text>
+      <polyline points="150,130 156,122 162,138 168,122 174,138 180,122 186,138 192,122 198,138 204,130 210,130" fill="none" stroke="#f59e0b" strokeWidth="2" />
+      <text x="170" y="150" fill="#f59e0b" fontSize="11">R</text>
+    </svg>
+  );
+}
+
+// ---------- Aplicación ----------
+function App() {
+  const [P, setP] = useState(DEF);
+  const [speed, setSpeed] = useState(1);
+  const [demo, setDemo] = useState(false);
+  const [, setTick] = useState(0);
+  const simRef = useRef({ rc: freshRC(), rl: freshRL() });
+  const PRef = useRef(P); PRef.current = P;
+  const speedRef = useRef(speed); speedRef.current = speed;
+  const timers = useRef([]);
+  const prevSpeed = useRef(1);
+
+  useEffect(() => {
+    let raf; let last = performance.now();
+    const frame = now => {
+      const dt = Math.min((now - last) / 1000, 0.05) * speedRef.current;
+      last = now;
+      advanceRC(simRef.current.rc, dt, PRef.current.rc);
+      advanceRL(simRef.current.rl, dt, PRef.current.rl);
+      setTick(k => k + 1);
+      raf = requestAnimationFrame(frame);
+    };
+    raf = requestAnimationFrame(frame);
+    return () => { cancelAnimationFrame(raf); timers.current.forEach(clearTimeout); };
+  }, []);
+
+  const setPath = (mod, key, val) => setP(p => ({ ...p, [mod]: { ...p[mod], [key]: val } }));
+  const startRC = () => {
+    const s = simRef.current.rc; if (s.started) return;
+    Object.assign(s, { started: true, bounceArmed: PRef.current.rc.bounce, tp: 0, zoom: [], ripMin: Infinity, ripMax: -Infinity });
+  };
+  const resetRC = () => { simRef.current.rc = freshRC(); };
+  const toggleRL = on => {
+    const s = simRef.current.rl, p = PRef.current.rl;
+    if (on) { s.spike = 0; s.on = true; }
+    else {
+      s.offFlyback = p.flyback;
+      s.spike = p.flyback ? 0 : (p.L / 1000) * s.i / 0.0005; // −L·di/dt con Δt ≈ 0,5 ms
+      s.on = false;
+    }
+  };
+
+  const runDemo = () => {
+    timers.current.forEach(clearTimeout); timers.current = [];
+    resetRC(); simRef.current.rl = freshRL();
+    prevSpeed.current = speedRef.current;
+    setSpeed(5); setDemo(true); setPath("rc", "bounce", true);
+    const at = (ms, fn) => timers.current.push(setTimeout(fn, ms));
+    at(300, startRC);
+    at(2500, () => toggleRL(true));
+    at(4500, () => setPath("rlc", "f", 60));
+    at(6000, () => setPath("rlc", "f", 450));
+    at(7500, () => setPath("rlc", "f", 1000));
+    at(9000, () => setPath("rl", "flyback", false));
+    at(10000, () => toggleRL(false));
+    at(12000, () => { setDemo(false); setSpeed(prevSpeed.current); });
+  };
+
+  // Derivados del estado
+  const S = simRef.current, rc = S.rc, rl = S.rl;
+  const pRC = P.rc, pRL = P.rl, pRLC = P.rlc;
+  const tauRC = (pRC.R * 1e3 * pRC.C * 1e-6);
+  const armed = rc.started && rc.v >= pRC.thr * pRC.V;
+  const ImaxRL = pRL.V / pRL.R;
+  const lockFrac = Math.min(1, rl.i / ImaxRL);
+  const rlc = rlcCalc(pRLC);
+  const relIn = rlc.rel(pRLC.f);
+  const pass = relIn >= 0.707;
+  const stRC = !rc.started ? "off" : armed ? "on" : "proc";
+  const stRL = rl.on ? (lockFrac >= 0.95 ? "on" : "proc") : (lockFrac > 0.02 ? "proc" : "off");
+  const stRLC = pass ? "on" : "off";
+  const ripple = rc.started && isFinite(rc.ripMax) ? (rc.ripMax - rc.ripMin) * 1000 : 0;
+  const rcColor = !rc.started ? "var(--muted)" : armed ? "var(--emerald)" : "var(--amber)";
+
+  return (
+    <div className="mx-auto max-w-7xl">
+      <header className="flex flex-wrap items-center justify-between gap-3 pb-3">
+        <div className="min-w-0">
+          <h1 className="text-lg font-semibold tracking-tight">Sistema Domótico de Seguridad y Control</h1>
+          <p className="text-xs" style={{ color: "var(--muted)" }}>Módulos RC · RL · RLC — simulación física en tiempo real</p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex rounded-md overflow-hidden border" style={{ borderColor: "var(--border)" }} role="group" aria-label="Velocidad de simulación">
+            {SPEEDS.map(sp => (
+              <button key={sp} type="button" onClick={() => setSpeed(sp)} className="px-2.5 py-1.5 text-xs mono"
+                style={{ background: speed === sp ? "#0e7490" : "transparent", color: speed === sp ? "#ecfeff" : "var(--muted)" }}>{sp}x</button>
+            ))}
+          </div>
+          <button type="button" onClick={runDemo} disabled={demo}
+            className="rounded-md px-3 py-1.5 text-xs font-semibold disabled:opacity-60"
+            style={{ background: "var(--amber)", color: "#0f172a" }}>
+            {demo ? "Demo en curso…" : "Modo Demo Automática"}
+          </button>
+        </div>
+      </header>
+
+      <BlockDiagram states={{ rc: stRC, rl: stRL, rlc: stRLC }} />
+
+      <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
+        {/* ===== Módulo 1: RC ===== */}
+        <Card title="Módulo 1 · Circuito RC" sub="Temporizador de salida y antirrebote"
+          pill={<Pill color={rcColor}>{!rc.started ? "En reposo" : armed ? "ALARMA ARMADA" : "Tiempo para salir (Armando...)"}</Pill>}>
+          <RCSchematic v={rc.v} V={pRC.V} started={rc.started} flowing={rc.started && !armed} />
+          <div className="flex flex-wrap gap-2 items-center">
+            <Btn color="var(--emerald)" onClick={startRC} disabled={rc.started}>Armar Alarma (Pulsador)</Btn>
+            <Btn color="var(--red)" onClick={resetRC}>Reset / Descargar</Btn>
+            <label className="flex items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
+              <input type="checkbox" checked={pRC.bounce} onChange={e => setPath("rc", "bounce", e.target.checked)} disabled={rc.started} />
+              Ruido / rebote mecánico
+            </label>
+          </div>
+          <Slider label="Fuente V_in" value={pRC.V} min={5} max={24} unit="V" onChange={v => setPath("rc", "V", v)} />
+          <Slider label="Resistencia R" value={pRC.R} min={1} max={50} unit="kΩ" onChange={v => setPath("rc", "R", v)} />
+          <Slider label="Capacitor C" value={pRC.C} min={100} max={2200} step={10} unit="µF" onChange={v => setPath("rc", "C", v)} />
+          <div className="flex gap-2 text-xs items-center" style={{ color: "var(--muted)" }}>
+            Umbral:
+            <Btn color="var(--amber)" onClick={() => setPath("rc", "thr", 0.632)}>1τ · 63,2 %</Btn>
+            <Btn color="var(--emerald)" onClick={() => setPath("rc", "thr", 0.95)}>3τ · 95 %</Btn>
+          </div>
+          <Scope height={160} draw={(ctx, w, h) => drawRC(ctx, w, h, rc, pRC)} />
+          <Scope height={80} draw={(ctx, w, h) => drawZoom(ctx, w, h, rc, pRC)} />
+          <div className="grid grid-cols-2 gap-2">
+            <Metric label="τ = R·C" value={fmt(tauRC, 1)} unit="s" />
+            <Metric label="v_C(t) ahora" value={fmt(rc.v, 2)} unit="V" color={rcColor} />
+            <Metric label="Carga" value={fmt(rc.v / pRC.V * 100, 1)} unit="%" />
+            <Metric label="Rizado en rebote" value={fmt(ripple, 1)} unit="mV" />
+          </div>
+          <Details>
+            <div>v_C(t) = V_in · (1 − e^(−t / (R·C)))</div>
+            <div>τ = R·C; a 1τ se alcanza 63,2 % de V_in; a 3τ, 95 %.</div>
+            <div>El rebote dura decenas de ms; con τ de segundos el RC promedia el ruido y v_C sube sin escalones.</div>
+          </Details>
+        </Card>
+
+        {/* ===== Módulo 2: RL ===== */}
+        <Card title="Módulo 2 · Circuito RL" sub="Arranque suave de cerradura electromagnética"
+          pill={<Pill color={stRL === "on" ? "var(--emerald)" : stRL === "proc" ? "var(--amber)" : "var(--muted)"}>
+            {rl.on ? (lockFrac >= 0.95 ? "Cerrojo retraído" : "Energizando…") : (lockFrac > 0.02 ? "Desmagnetizando" : "Cerrojo extendido")}
+          </Pill>}>
+          <div className="grid grid-cols-2 gap-2 items-center">
+            <RLSchematic lock={rl.on} flowing={rl.on || rl.i > 0.01} lockFrac={lockFrac} />
+            <LockSVG frac={lockFrac} />
+          </div>
+          <div className="flex flex-wrap gap-2 items-center">
+            <Btn color="var(--amber)" onClick={() => toggleRL(!rl.on)}>{rl.on ? "Desenergizar Cerrojo" : "Energizar Cerrojo"}</Btn>
+            <label className="flex items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
+              <input type="checkbox" checked={pRL.flyback} onChange={e => setPath("rl", "flyback", e.target.checked)} />
+              Diodo Flyback de Protección
+            </label>
+          </div>
+          {!rl.on && !pRL.flyback && rl.spike > 0 && (
+            <div className="rounded-md p-2 text-xs mono" style={{ border: "1px solid var(--red)", color: "var(--red)" }}>
+              ⚠ Pico de voltaje inverso estimado: {fmt(rl.spike, 0)} V (−L·di/dt). Instala un diodo flyback.
+            </div>
+          )}
+          {!rl.on && pRL.flyback && (
+            <div className="rounded-md p-2 text-xs" style={{ border: "1px solid var(--emerald)", color: "var(--emerald)" }}>
+              Diodo conduciendo: la corriente recircula y el pico queda limitado a unos −0,7 V.
+            </div>
+          )}
+          <Slider label="Fuente V_in" value={pRL.V} min={5} max={24} unit="V" onChange={v => setPath("rl", "V", v)} />
+          <Slider label="Resistencia total R" value={pRL.R} min={2} max={50} unit="Ω" onChange={v => setPath("rl", "R", v)} />
+          <Slider label="Inductancia L" value={pRL.L} min={50} max={1000} step={10} unit="mH" onChange={v => setPath("rl", "L", v)} />
+          <Scope height={160} draw={(ctx, w, h) => drawRL(ctx, w, h, rl, pRL)} />
+          <div className="grid grid-cols-2 gap-2">
+            <Metric label="τ = L/R" value={fmt(pRL.L / pRL.R, 1)} unit="ms" />
+            <Metric label="I_max = V/R" value={fmt(ImaxRL, 3)} unit="A" />
+            <Metric label="i_L(t) ahora" value={fmt(rl.i * 1000, 1)} unit="mA" color={stRL === "on" ? "var(--emerald)" : "var(--fg)"} />
+            <Metric label="Fuerza magnética" value={fmt(lockFrac * 100, 1)} unit="%" />
+          </div>
+          <Details>
+            <div>i_L(t) = (V_in / R) · (1 − e^(−(R/L)·t))</div>
+            <div>τ = L / R (en ms); I_max = V_in / R (estacionaria).</div>
+            <div>Sin diodo: V_pico ≈ L·I₀ / Δt, con Δt ≈ 0,5 ms estimado. Con diodo: recirculación con τ = L/R.</div>
+          </Details>
+        </Card>
+
+        {/* ===== Módulo 3: RLC ===== */}
+        <Card title="Módulo 3 · Circuito RLC serie" sub="Filtro pasa-banda para alerta sin interferencias"
+          pill={<Pill color={pass ? "var(--emerald)" : "var(--muted)"}>{pass ? "Sirena: ALERTA" : "Rechazado"}</Pill>}>
+          <div className="flex items-center gap-3">
+            <div className="flex-1 min-w-0">
+              <RLCSchematic pass={pass} flowing={pass} />
+            </div>
+            <div className="w-16 h-16 rounded-full shrink-0 flex items-center justify-center text-[10px] mono"
+              style={{
+                background: pass ? "var(--emerald)" : "#1e293b",
+                color: pass ? "#052e16" : "#64748b",
+                boxShadow: pass ? "0 0 22px 4px rgba(16,185,129,0.6)" : "none",
+                transition: "all .15s",
+              }}>{pass ? "SIRENA" : "OFF"}</div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Btn color="var(--amber)" onClick={() => setPath("rlc", "f", 60)}>Ruido Red (60 Hz)</Btn>
+            <Btn color="var(--amber)" onClick={() => setPath("rlc", "f", 450)}>Motor Licuadora (450 Hz)</Btn>
+            <Btn color="var(--emerald)" onClick={() => setPath("rlc", "f", 1000)}>Tono Alarma (1000 Hz)</Btn>
+          </div>
+          <Slider label="Frecuencia entrante f_in" value={pRLC.f} min={50} max={3000} unit="Hz" onChange={v => setPath("rlc", "f", v)} />
+          <Slider label="Inductancia L" value={pRLC.L} min={10} max={500} unit="mH" onChange={v => setPath("rlc", "L", v)} />
+          <Slider label="Capacitor C" value={pRLC.C} min={50} max={1000} unit="nF" onChange={v => setPath("rlc", "C", v)} />
+          <Slider label="Resistencia de carga R" value={pRLC.R} min={10} max={200} unit="Ω" onChange={v => setPath("rlc", "R", v)} />
+          <Scope height={170} draw={(ctx, w, h) => drawRLC(ctx, w, h, rlc, pRLC.f)} />
+          <div className="grid grid-cols-2 gap-2">
+            <Metric label="f₀ = 1/(2π√LC)" value={fmt(rlc.f0, 1)} unit="Hz" />
+            <Metric label="Factor Q" value={fmt(rlc.Q, 2)} unit="" />
+            <Metric label="Ancho −3 dB" value={fmt(rlc.BW, 1)} unit="Hz" />
+            <Metric label="Z(f_in)" value={fmt(rlc.Z(pRLC.f), 1)} unit="Ω" />
+            <Metric label="I(f_in)" value={fmt(relIn * rlc.Imax * 1000, 2)} unit="mA" color={pass ? "var(--emerald)" : "var(--amber)"} />
+            <Metric label="I / I_max" value={fmt(relIn * 100, 1)} unit="%" />
+          </div>
+          <Details>
+            <div>f₀ = 1 / (2π·√(L·C))</div>
+            <div>X_L = 2π·f·L; X_C = 1 / (2π·f·C); Z = √(R² + (X_L − X_C)²)</div>
+            <div>Q = (1/R)·√(L/C); ancho −3 dB: B = R / (2π·L)</div>
+            <div>Sirena activa si I ≥ 0,707 · I_max.</div>
+          </Details>
+        </Card>
+      </div>
+
+      <style>{`@media (max-width: 420px) { .mono { font-size: 12px; } }`}</style>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+
+</body></html>
